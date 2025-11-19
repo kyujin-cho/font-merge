@@ -6,6 +6,8 @@ Copies designated Unicode ranges of glyphs from one TrueType font file to anothe
 
 import sys
 import argparse
+import copy
+import traceback
 from pathlib import Path
 
 try:
@@ -59,6 +61,67 @@ def get_glyph_name_for_codepoint(font, codepoint):
     return None
 
 
+def get_component_glyphs(font, glyph_name):
+    """
+    Recursively get all component glyph names that a glyph depends on.
+
+    Args:
+        font: TTFont object
+        glyph_name: Name of the glyph to analyze
+
+    Returns:
+        Set of glyph names that this glyph depends on
+    """
+    components = set()
+
+    if 'glyf' not in font:
+        return components
+
+    try:
+        glyph = font['glyf'][glyph_name]
+
+        # Check if this is a composite glyph
+        if glyph.isComposite():
+            for component in glyph.components:
+                component_name = component.glyphName
+                components.add(component_name)
+                # Recursively get components of components
+                components.update(get_component_glyphs(font, component_name))
+    except:
+        pass
+
+    return components
+
+
+def generate_glyph_name(codepoint, existing_names):
+    """
+    Generate a glyph name for a codepoint that doesn't conflict with existing names.
+
+    Args:
+        codepoint: Unicode codepoint
+        existing_names: Set of existing glyph names to avoid conflicts
+
+    Returns:
+        A unique glyph name
+    """
+    # Standard glyph naming: uni + 4-digit hex for BMP, u + 5+ digits for others
+    if codepoint <= 0xFFFF:
+        base_name = f"uni{codepoint:04X}"
+    else:
+        base_name = f"u{codepoint:04X}"
+
+    # If no conflict, return the base name
+    if base_name not in existing_names:
+        return base_name
+
+    # If there's a conflict, add a suffix
+    counter = 1
+    while f"{base_name}.alt{counter}" in existing_names:
+        counter += 1
+
+    return f"{base_name}.alt{counter}"
+
+
 def copy_glyphs(source_font_path, dest_font_path, output_path, unicode_ranges, new_family_name=None):
     """
     Copy glyphs from source font to destination font for specified Unicode ranges.
@@ -91,7 +154,14 @@ def copy_glyphs(source_font_path, dest_font_path, output_path, unicode_ranges, n
     source_glyf = source_font['glyf']
     dest_glyf = dest_font['glyf']
 
-    # Process each codepoint
+    # Collect all glyphs to copy (including components)
+    glyphs_to_copy = {}  # Maps source_glyph_name -> (codepoint, dest_glyph_name)
+    component_glyphs = set()  # Component glyphs that need to be copied
+
+    # Get existing glyph names in destination to avoid conflicts
+    existing_glyph_names = set(dest_glyf.keys())
+
+    # First pass: collect main glyphs and their codepoints
     for codepoint in codepoints_to_copy:
         # Get glyph name from source font
         source_glyph_name = get_glyph_name_for_codepoint(source_font, codepoint)
@@ -102,42 +172,104 @@ def copy_glyphs(source_font_path, dest_font_path, output_path, unicode_ranges, n
             skipped_count += 1
             continue
 
-        # Get glyph name from destination font (may be different)
-        dest_glyph_name = get_glyph_name_for_codepoint(dest_font, codepoint)
+        # Generate appropriate glyph name that matches the codepoint
+        # Always generate a new name to ensure consistency between name and codepoint
+        dest_glyph_name = generate_glyph_name(codepoint, existing_glyph_names)
+        existing_glyph_names.add(dest_glyph_name)
 
-        if dest_glyph_name is None:
-            # Codepoint doesn't exist in destination, need to add it
-            # For now, we'll use the source glyph name
-            dest_glyph_name = source_glyph_name
+        glyphs_to_copy[source_glyph_name] = (codepoint, dest_glyph_name)
 
-            # Add to cmap table
-            for table in dest_font['cmap'].tables:
-                if hasattr(table, 'cmap'):
-                    table.cmap[codepoint] = dest_glyph_name
+        # Get all component glyphs this glyph depends on
+        components = get_component_glyphs(source_font, source_glyph_name)
+        component_glyphs.update(components)
 
-        # Copy the glyph data
+    # Add component glyphs to the copy list
+    for component_name in component_glyphs:
+        if component_name not in glyphs_to_copy and component_name in source_glyf:
+            # Component glyphs keep their original names and don't have direct codepoint mappings
+            glyphs_to_copy[component_name] = (None, component_name)
+
+    print(f"Total glyphs to copy (including components): {len(glyphs_to_copy)}")
+
+    # Second pass: copy all glyphs
+    for source_glyph_name, (codepoint, dest_glyph_name) in glyphs_to_copy.items():
         try:
+            # Get the source glyph
             source_glyph = source_glyf[source_glyph_name]
-            dest_glyf[dest_glyph_name] = source_glyph
+
+            # Use TTGlyphPen to properly copy the glyph
+            # This handles both simple and composite glyphs correctly
+            pen = TTGlyphPen(dest_font.getGlyphSet())
+
+            # Draw the source glyph using the pen
+            source_glyph_set = source_font.getGlyphSet()
+            if source_glyph_name in source_glyph_set:
+                try:
+                    source_glyph_set[source_glyph_name].draw(pen)
+                    new_glyph = pen.glyph()
+
+                    # Preserve glyph properties
+                    if hasattr(source_glyph, 'program'):
+                        new_glyph.program = source_glyph.program
+
+                    dest_glyf[dest_glyph_name] = new_glyph
+                except:
+                    # Fallback: direct copy for glyphs that can't be drawn
+                    dest_glyf[dest_glyph_name] = copy.deepcopy(source_glyph)
+            else:
+                # Direct copy for glyphs not in glyph set
+                dest_glyf[dest_glyph_name] = copy.deepcopy(source_glyph)
 
             # Copy metrics from hmtx table
             if 'hmtx' in source_font and 'hmtx' in dest_font:
-                source_metrics = source_font['hmtx'][source_glyph_name]
-                dest_font['hmtx'][dest_glyph_name] = source_metrics
+                if source_glyph_name in source_font['hmtx'].metrics:
+                    source_metrics = source_font['hmtx'][source_glyph_name]
+                    dest_font['hmtx'][dest_glyph_name] = source_metrics
 
-            char = chr(codepoint) if codepoint <= 0x10FFFF else '?'
-            print(f"  ✓ Copied: U+{codepoint:04X} ({char}) - {source_glyph_name}")
-            copied_count += 1
+            # Copy vertical metrics if present
+            if 'vmtx' in source_font and 'vmtx' in dest_font:
+                if source_glyph_name in source_font['vmtx'].metrics:
+                    source_vmetrics = source_font['vmtx'][source_glyph_name]
+                    dest_font['vmtx'][dest_glyph_name] = source_vmetrics
+
+            # Update cmap if this glyph has a codepoint
+            if codepoint is not None:
+                for table in dest_font['cmap'].tables:
+                    if hasattr(table, 'cmap'):
+                        table.cmap[codepoint] = dest_glyph_name
+
+                char = chr(codepoint) if codepoint <= 0x10FFFF else '?'
+                print(f"  ✓ Copied: U+{codepoint:04X} ({char}) -> {dest_glyph_name}")
+                copied_count += 1
+            else:
+                print(f"  ✓ Copied component: {dest_glyph_name}")
 
         except Exception as e:
-            char = chr(codepoint) if codepoint <= 0x10FFFF else '?'
-            print(f"  Error copying U+{codepoint:04X} ({char}): {e}")
+            if codepoint is not None:
+                char = chr(codepoint) if codepoint <= 0x10FFFF else '?'
+                print(f"  Error copying U+{codepoint:04X} ({char}): {e}")
+            else:
+                print(f"  Error copying component {source_glyph_name}: {e}")
             skipped_count += 1
+            traceback.print_exc()
 
     # Rename font family if requested
     if new_family_name:
         print(f"\nRenaming font family to: {new_family_name}")
         rename_font_family(dest_font, new_family_name)
+
+    # Remove variable font tables to avoid corruption
+    # When glyphs are copied, variation tables become invalid
+    variation_tables = ['fvar', 'gvar', 'avar', 'STAT', 'MVAR', 'HVAR', 'VVAR']
+    removed_tables = []
+    for table_tag in variation_tables:
+        if table_tag in dest_font:
+            del dest_font[table_tag]
+            removed_tables.append(table_tag)
+
+    if removed_tables:
+        print(f"\nNote: Removed variable font tables: {', '.join(removed_tables)}")
+        print("      Output font will be a static font (non-variable)")
 
     # Save the modified font
     print(f"\nSaving modified font to: {output_path}")

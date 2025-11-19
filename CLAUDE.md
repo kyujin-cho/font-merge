@@ -65,32 +65,70 @@ Use the `-f` or `--family-name` option to rename the font family in the output f
 1. **Load fonts**: Opens both source and destination TTFont objects
 2. **Parse ranges**: Converts Unicode range strings into lists of codepoints
 3. **Glyph lookup**: For each codepoint, retrieves glyph names from font cmap tables
-4. **Copy operations**:
-   - Copies glyph data from source `glyf` table to destination `glyf` table
+4. **Component detection**: Recursively identifies all component glyphs needed for composite glyphs
+5. **Copy operations**:
+   - Uses TTGlyphPen to properly draw and copy glyphs (handles both simple and composite)
+   - Falls back to deep copy for glyphs that can't be drawn
    - Copies horizontal metrics from `hmtx` table
+   - Copies vertical metrics from `vmtx` table (if present)
    - Updates `cmap` table if codepoint doesn't exist in destination
-5. **Rename (optional)**: Updates font family names in the `name` table if `-f` option is provided
-6. **Save**: Writes modified font to output path
+   - Copies component glyphs to ensure composite glyphs render correctly
+6. **Rename (optional)**: Updates font family names in the `name` table if `-f` option is provided
+7. **Save**: Writes modified font to output path
 
 ### Key Functions
 
 - `parse_unicode_range()`: Handles flexible Unicode range string parsing
 - `get_glyph_name_for_codepoint()`: Maps Unicode codepoints to font-internal glyph names
-- `copy_glyphs()`: Main logic for copying glyphs between fonts
+- `get_component_glyphs()`: Recursively finds all component glyphs that a composite glyph depends on
+- `generate_glyph_name()`: Generates consistent glyph names (uniXXXX format) that match codepoints
+- `copy_glyphs()`: Main logic for copying glyphs between fonts (with component detection)
 - `rename_font_family()`: Updates font family names in the font's name table
 
 ### Font Tables Used
 
 - `cmap`: Character-to-glyph mapping (Unicode → glyph name)
-- `glyf`: Glyph outline data
+- `glyf`: Glyph outline data (simple and composite glyphs)
 - `hmtx`: Horizontal metrics (advance width, left side bearing)
+- `vmtx`: Vertical metrics (optional, for vertical text layout)
 - `name`: Font naming table (used for font family renaming)
+
+## Testing
+
+The project includes an integration test suite:
+
+### Running Tests
+```bash
+./run_tests.sh        # Unix/Linux/Mac
+run_tests.bat         # Windows
+python test_integration.py  # Direct execution
+```
+
+### Test File
+- `test_integration.py`: Comprehensive integration tests that verify:
+  - CJK Unicode range copying (U+4E00-U+9FFF)
+  - Small range precision
+  - Font family renaming
+  - Glyph metrics preservation
+  - Multiple range operations
+  - Error handling
+
+Tests use the sample fonts and verify actual glyph copying, metrics, and font table modifications.
+
+## Variable Font Handling
+
+**Important**: When copying glyphs from or to variable fonts:
+- Variable font tables (`fvar`, `gvar`, `avar`, `STAT`, `MVAR`, `HVAR`, `VVAR`) are automatically removed
+- Output font will always be a static (non-variable) font
+- This prevents corruption that would occur from invalid variation data after copying glyphs
+
+The script will display a message when removing these tables.
 
 ## Sample Font Files
 
-The repository includes three font files likely used for testing:
-- `GoogleSansFlex-VariableFont_GRAD,ROND,opsz,slnt,wdth,wght.ttf`
+The repository includes three font files used for testing:
+- `GoogleSansFlex-VariableFont_GRAD,ROND,opsz,slnt,wdth,wght.ttf` (destination font for tests)
 - `GoogleSansFlexCJK-Variable.ttf`
-- `PretendardJPVariable.ttf`
+- `PretendardJPVariable.ttf` (source font for tests)
 
 These are variable fonts supporting multiple languages (Latin, CJK, Japanese).

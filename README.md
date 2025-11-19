@@ -7,9 +7,11 @@ A Python utility for copying glyphs from one TrueType font to another for specif
 - Copy specific Unicode ranges between TrueType fonts
 - Support for flexible Unicode range notation (U+, 0x, or plain hex)
 - Copy multiple ranges in a single operation
+- Automatically handles composite glyphs and their components
 - Rename font family in the output file
-- Preserves glyph metrics and character mappings
-- Works with variable fonts
+- Preserves glyph metrics (horizontal and vertical) and character mappings
+- Proper deep copy of glyph data ensures correct rendering
+- Works with both static and variable fonts (output is always static)
 
 ## Requirements
 
@@ -123,9 +125,10 @@ For a complete list, see the [Unicode Character Code Charts](https://www.unicode
 1. **Load Fonts**: Opens both the source and destination font files using fontTools
 2. **Parse Ranges**: Converts Unicode range strings into lists of codepoints
 3. **Lookup Glyphs**: For each codepoint, finds the corresponding glyph name in the source font
-4. **Copy Data**: Copies glyph outlines, metrics, and character mappings to the destination font
-5. **Rename (Optional)**: Updates the font family name in the font's metadata if specified
-6. **Save**: Writes the modified font to the output file
+4. **Collect Dependencies**: Identifies all component glyphs (for composite glyphs) that need to be copied
+5. **Copy Data**: Properly copies glyph outlines (simple and composite), metrics, and character mappings to the destination font using deep copy techniques
+6. **Rename (Optional)**: Updates the font family name in the font's metadata if specified
+7. **Save**: Writes the modified font to the output file
 
 ## Use Cases
 
@@ -144,12 +147,51 @@ The script modifies the following OpenType/TrueType tables:
 - `hmtx`: Horizontal metrics (width and positioning)
 - `name`: Font naming information (when using `-f` option)
 
+**Note**: Glyphs are renamed using standard naming conventions (`uniXXXX` format) to ensure consistency between glyph names and Unicode codepoints. This prevents warnings from font validation tools.
+
 ## Limitations
 
 - Currently supports TrueType fonts (.ttf) only
-- Does not copy font features (OpenType features like ligatures remain from destination font)
-- Kerning pairs are not updated between copied and existing glyphs
-- Variable font instances are not explicitly handled (copies from default instance)
+- **Variable fonts**: Input fonts can be variable, but the output font will always be a static font
+  - Variable font tables (`fvar`, `gvar`, `STAT`, etc.) are removed to prevent corruption
+  - Glyphs are copied from the default instance of variable fonts
+- Does not copy OpenType features (GSUB/GPOS tables like ligatures, kerning rules remain from destination font)
+- Kerning pairs between copied and existing glyphs are not automatically updated
+- Font hinting instructions may not be perfectly preserved in all cases
+
+## Testing
+
+The project includes a comprehensive integration test suite to verify functionality.
+
+### Running Tests
+
+**Unix/Linux/Mac:**
+```bash
+./run_tests.sh
+```
+
+**Windows:**
+```cmd
+run_tests.bat
+```
+
+**Python directly:**
+```bash
+python test_integration.py
+```
+
+### Test Coverage
+
+The test suite includes:
+- CJK Unicode range copying (U+4E00-U+9FFF)
+- Small range precision testing
+- Font family renaming verification
+- Glyph metrics preservation
+- Multiple range copying
+- Missing codepoint handling
+- Script help and usage validation
+
+All tests use the included sample fonts (PretendardJPVariable.ttf and GoogleSansFlex).
 
 ## Troubleshooting
 
