@@ -1,0 +1,2 @@
+# Font manipulation library
+fonttools>=4.38.0
